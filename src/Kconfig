@@ -2,8 +2,7 @@ menu "LIME"
 
 config LIME_MEM
 	tristate "LiME integration"
-	depends on KSU
-	default y
+	default m
 	help
 	  Enable kernel-level memory acquisition on Android System.
 	  To compile as a module, choose M here: the
