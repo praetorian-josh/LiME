@@ -1,0 +1,12 @@
+menu "LiME"
+
+config LIME
+	tristate "LiME integration"
+	depends on KSU
+	default y
+	help
+	  Enable kernel-level memory acquisition on Android System.
+	  To compile as a module, choose M here: the
+	  module will be called lime.
+
+endmenu
