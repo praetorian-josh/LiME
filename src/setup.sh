@@ -54,7 +54,7 @@ setup_lime() {
     ln -sf "$(realpath --relative-to="$DRIVER_DIR" "$GKI_ROOT/LiME/src")" "lime" && echo "[+] Symlink created."
 
     # Add entries in Makefile and Kconfig if not already existing
-    grep -q "lime" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_LIME) += lime/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
+    grep -q "lime" "$DRIVER_MAKEFILE" || printf "\nobj-\$(CONFIG_LIME_MEM) += lime/\n" >> "$DRIVER_MAKEFILE" && echo "[+] Modified Makefile."
     grep -q "source \"drivers/lime/Kconfig\"" "$DRIVER_KCONFIG" || sed -i "/endmenu/i\source \"drivers/lime/Kconfig\"" "$DRIVER_KCONFIG" && echo "[+] Modified Kconfig."
     echo '[+] Done.'
 }
