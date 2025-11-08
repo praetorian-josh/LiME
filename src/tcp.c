@@ -44,7 +44,7 @@ extern int localhostonly;
 static struct socket *control;
 static struct socket *accept;
 
-int setup_tcp() {
+int setup_tcp(void) {
     struct sockaddr_in saddr;
     int r;
 
@@ -118,7 +118,7 @@ int setup_tcp() {
     return 0;
 }
 
-void cleanup_tcp() {
+void cleanup_tcp(void) {
     if (accept) {
         kernel_sock_shutdown(accept, SHUT_RDWR);
         sock_release(accept);

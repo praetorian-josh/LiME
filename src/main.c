@@ -135,7 +135,7 @@ static int __init lime_init_module (void)
     return init();
 }
 
-static int init() {
+static int init(void) {
     struct resource *p;
     int err = 0;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,18)
