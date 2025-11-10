@@ -20,41 +20,48 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 
-obj-m := lime.o
 lime-objs := tcp.o disk.o main.o hash.o deflate.o
+#obj-m := lime.o
+obj-$(LIME_MEM) += lime.o
 
 KVER ?= $(shell uname -r)
 
-KDIR ?= /lib/modules/$(KVER)/build
+#KDIR ?= /lib/modules/$(KVER)/build
+KDIR := $(KDIR)
+MDIR := $(realpath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 
 PWD := $(shell pwd)
+
+$(info -- LiME KDIR: $(KDIR))
+$(info -- LiME MDIR: $(MDIR))
 
 .PHONY: modules modules_install clean distclean debug
 
 default:
-	$(MAKE) -C $(KDIR) M="$(PWD)" modules
-	strip --strip-unneeded lime.ko
-	mv lime.ko lime-$(KVER).ko
+	$(MAKE) -C $(KDIR) M="$(MDIR)" modules
+	#strip --strip-unneeded lime.ko
+	#mv lime.ko lime-$(KVER).ko
 
 debug:
-	KCFLAGS="-DLIME_DEBUG" $(MAKE) CONFIG_DEBUG_SG=y -C $(KDIR) M="$(PWD)" modules
-	strip --strip-unneeded lime.ko
-	mv lime.ko lime-$(KVER).ko
+	KCFLAGS="-DLIME_DEBUG" $(MAKE) CONFIG_DEBUG_SG=y -C $(KDIR) M="$(MDIR)" modules
+	#strip --strip-unneeded lime.ko
+	#mv lime.ko lime-$(KVER).ko
 
 symbols:
-	$(MAKE) -C $(KDIR) M="$(PWD)" modules
-	mv lime.ko lime-$(KVER).ko
+	$(MAKE) -C $(KDIR) M="$(MDIR)" modules
+	#mv lime.ko lime-$(KVER).ko
 
 modules:    main.c disk.c tcp.c hash.c lime.h
-	$(MAKE) -C /lib/modules/$(KVER)/build M="$(PWD)" $@
-	strip --strip-unneeded lime.ko
+	$(MAKE) -C $(KDIR) M="$(MDIR)" $@
+	#strip --strip-unneeded lime.ko
 
 modules_install:    modules
-	$(MAKE) -C $(KDIR) M="$(PWD)" $@
+	$(MAKE) -C $(KDIR) M="$(MDIR)" $@
 
 clean:
-	rm -f *.o *.mod.c Module.symvers Module.markers modules.order \.*.o.cmd \.*.ko.cmd \.*.o.d
-	rm -rf \.tmp_versions
+	$(MAKE) -C $(KDIR) M="$(MDIR)" clean
+	# rm -f *.o *.mod.c Module.symvers Module.markers modules.order \.*.o.cmd \.*.ko.cmd \.*.o.d
+	# rm -rf \.tmp_versions
 
 distclean: mrproper
 mrproper:    clean
