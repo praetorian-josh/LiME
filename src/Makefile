@@ -22,7 +22,7 @@
 
 lime-objs := tcp.o disk.o main.o hash.o deflate.o sysfs.o
 #obj-m := lime.o
-obj-$(LIME_MEM) += lime.o
+obj-$(CONFIG_LIME_MEM) += lime.o
 
 KVER ?= $(shell uname -r)
 

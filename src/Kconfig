@@ -2,7 +2,7 @@ menu "LIME"
 
 config LIME_MEM
 	tristate "LiME - Linux Memory Extractor"
-	default m
+	default y
 	help
 	  LiME (Linux Memory Extractor) is a kernel module/driver for acquiring
 	  volatile memory (RAM) from Linux and Android devices for forensic
