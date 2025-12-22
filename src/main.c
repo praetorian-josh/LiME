@@ -56,28 +56,32 @@ extern int deflate_end_stream(void);
 extern ssize_t deflate(const void *, size_t);
 #endif
 
-static char * format = 0;
+static char *format = NULL;
 static int mode = 0;
 static int method = 0;
 
-static void * vpage;
+static void *vpage;
 
 #ifdef LIME_SUPPORTS_DEFLATE
 static void *deflate_page_buf;
 #endif
 
-char * path = 0;
+char *path = NULL;
 int dio = 0;
 int port = 0;
 int localhostonly = 0;
 
-char * digest = 0;
+char *digest = NULL;
 int compute_digest = 0;
 
 int no_overlap = 0;
 
 extern struct resource iomem_resource;
 
+/*
+ * Module parameters - these allow traditional insmod-based configuration
+ * When built-in, use the sysfs interface at /sys/kernel/lime/ instead
+ */
 module_param(path, charp, S_IRUGO);
 module_param(dio, int, S_IRUGO);
 module_param(format, charp, S_IRUGO);
@@ -94,14 +98,54 @@ int compress = 0;
 module_param(compress, int, S_IRUGO);
 #endif
 
-static int __init lime_init_module (void)
+/*
+ * When sysfs_only=1 or built-in, don't auto-start acquisition
+ * Instead, use /sys/kernel/lime/trigger to start
+ */
+static int sysfs_only = 0;
+module_param(sysfs_only, int, S_IRUGO);
+
+/*
+ * Parse format string and set mode
+ * Returns 0 on success, -EINVAL on error
+ */
+static int parse_format(const char *fmt)
 {
-    if(!path) {
+    if (!fmt || !fmt[0])
+        return -EINVAL;
+
+    if (!strcmp(fmt, "raw"))
+        mode = LIME_MODE_RAW;
+    else if (!strcmp(fmt, "lime"))
+        mode = LIME_MODE_LIME;
+    else if (!strcmp(fmt, "padded"))
+        mode = LIME_MODE_PADDED;
+    else
+        return -EINVAL;
+
+    return 0;
+}
+
+/*
+ * Perform memory acquisition
+ * This is called either from module init (traditional mode) or from sysfs trigger
+ */
+int lime_do_acquisition(void)
+{
+    int ret;
+    const char *fmt;
+
+    /*
+     * Use sysfs format if set, otherwise use module parameter format
+     */
+    fmt = lime_format ? lime_format : format;
+
+    if (!path || !path[0]) {
         DBG("No path parameter specified");
         return -EINVAL;
     }
 
-    if(!format) {
+    if (!fmt || !fmt[0]) {
         DBG("No format parameter specified");
         return -EINVAL;
     }
@@ -109,7 +153,7 @@ static int __init lime_init_module (void)
     DBG("Parameters");
     DBG("  PATH: %s", path);
     DBG("  DIO: %u", dio);
-    DBG("  FORMAT: %s", format);
+    DBG("  FORMAT: %s", fmt);
     DBG("  LOCALHOSTONLY: %u", localhostonly);
     DBG("  DIGEST: %s", digest);
 
@@ -121,18 +165,69 @@ static int __init lime_init_module (void)
     DBG("  COMPRESS: %u", compress);
 #endif
 
-    if (!strcmp(format, "raw")) mode = LIME_MODE_RAW;
-    else if (!strcmp(format, "lime")) mode = LIME_MODE_LIME;
-    else if (!strcmp(format, "padded")) mode = LIME_MODE_PADDED;
-    else {
+    ret = parse_format(fmt);
+    if (ret) {
         DBG("Invalid format parameter specified.");
-        return -EINVAL;
+        return ret;
     }
 
     method = (sscanf(path, "tcp:%d", &port) == 1) ? LIME_METHOD_TCP : LIME_METHOD_DISK;
-    if (digest) compute_digest = LIME_DIGEST_COMPUTE;
+    if (digest)
+        compute_digest = LIME_DIGEST_COMPUTE;
+    else
+        compute_digest = 0;
 
     return init();
+}
+
+static int __init lime_init_module(void)
+{
+    int ret;
+
+    DBG("LiME module loading...");
+
+    /* Always initialize sysfs interface */
+    ret = lime_sysfs_init();
+    if (ret) {
+        DBG("Failed to initialize sysfs interface: %d", ret);
+        return ret;
+    }
+
+    /*
+     * When built as built-in (CONFIG_LIME_MEM=y), default to sysfs-only mode
+     * When built as module with sysfs_only=1, also use sysfs-only mode
+     * Otherwise, if path and format are provided, auto-start acquisition
+     */
+#ifdef MODULE
+    if (sysfs_only) {
+        DBG("Sysfs-only mode enabled, use /sys/kernel/lime/trigger to start acquisition");
+        return 0;
+    }
+
+    /* Traditional module behavior: if params provided, auto-start */
+    if (path && format) {
+        ret = lime_do_acquisition();
+        if (ret) {
+            lime_set_state(LIME_STATE_ERROR);
+        } else {
+            lime_set_state(LIME_STATE_COMPLETE);
+        }
+        /*
+         * For traditional usage, return error to unload module after acquisition
+         * This maintains backward compatibility
+         */
+        lime_sysfs_cleanup();
+        return ret;
+    }
+
+    /* No params and not sysfs_only - wait for sysfs trigger */
+    DBG("No path/format specified, use /sys/kernel/lime/trigger to start acquisition");
+#else
+    /* Built-in: always use sysfs interface */
+    DBG("Built-in mode: use /sys/kernel/lime/trigger to start acquisition");
+#endif
+
+    return 0;
 }
 
 static int init(void) {
@@ -394,8 +489,10 @@ static void cleanup(void) {
     return (method == LIME_METHOD_TCP) ? cleanup_tcp() : cleanup_disk();
 }
 
-static void __exit lime_cleanup_module(void) {
-
+static void __exit lime_cleanup_module(void)
+{
+    DBG("LiME module unloading...");
+    lime_sysfs_cleanup();
 }
 
 module_init(lime_init_module);

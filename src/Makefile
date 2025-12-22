@@ -20,7 +20,7 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
 
 
-lime-objs := tcp.o disk.o main.o hash.o deflate.o
+lime-objs := tcp.o disk.o main.o hash.o deflate.o sysfs.o
 #obj-m := lime.o
 obj-$(LIME_MEM) += lime.o
 
@@ -51,7 +51,7 @@ symbols:
 	$(MAKE) -C $(KDIR) M="$(MDIR)" modules
 	#mv lime.ko lime-$(KVER).ko
 
-modules:    main.c disk.c tcp.c hash.c lime.h
+modules:    main.c disk.c tcp.c hash.c sysfs.c lime.h
 	$(MAKE) -C $(KDIR) M="$(MDIR)" $@
 	#strip --strip-unneeded lime.ko
 

@@ -60,6 +60,12 @@
 #define LIME_DIGEST_COMPLETE 0
 #define LIME_DIGEST_COMPUTE 1
 
+/* Acquisition states for sysfs interface */
+#define LIME_STATE_IDLE       0
+#define LIME_STATE_ACQUIRING  1
+#define LIME_STATE_COMPLETE   2
+#define LIME_STATE_ERROR      3
+
 #ifdef LIME_DEBUG
 #define DBG(fmt, args...) do { printk("[LiME] "fmt"\n", ## args); } while (0)
 #else
@@ -84,7 +90,7 @@
 #define LIME_SUPPORTS_DEFLATE
 #endif
 
-//structures
+/* Structures */
 
 typedef struct {
     unsigned int magic;
@@ -94,6 +100,16 @@ typedef struct {
     unsigned char reserved[8];
 } __attribute__ ((__packed__)) lime_mem_range_header;
 
+/* Sysfs interface functions */
+int lime_sysfs_init(void);
+void lime_sysfs_cleanup(void);
+int lime_get_state(void);
+void lime_set_state(int state);
 
+/* Acquisition function (called from sysfs trigger) */
+int lime_do_acquisition(void);
+
+/* Format string from sysfs */
+extern char *lime_format;
 
 #endif //__LIME_H_

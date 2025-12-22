@@ -1,11 +1,36 @@
 menu "LIME"
 
 config LIME_MEM
-	tristate "LiME integration"
+	tristate "LiME - Linux Memory Extractor"
 	default m
 	help
-	  Enable kernel-level memory acquisition on Android System.
-	  To compile as a module, choose M here: the
-	  module will be called lime.
+	  LiME (Linux Memory Extractor) is a kernel module/driver for acquiring
+	  volatile memory (RAM) from Linux and Android devices for forensic
+	  analysis.
+
+	  When built as a module (M), LiME can be loaded with parameters:
+	    insmod lime.ko path=/path/to/dump format=lime
+
+	  When built-in (Y), or when loaded as module without parameters,
+	  LiME exposes a sysfs interface at /sys/kernel/lime/ with the
+	  following attributes:
+	    - path: Output destination (file path or tcp:port)
+	    - format: Output format (raw, lime, padded)
+	    - dio: Direct I/O flag (0 or 1)
+	    - localhostonly: TCP localhost only (0 or 1)
+	    - digest: Hash algorithm (md5, sha1, sha256, etc.)
+	    - timeout: Page read timeout in ms (kernel >= 2.6.35)
+	    - compress: Enable compression (kernel with ZLIB_DEFLATE)
+	    - state: Current acquisition state (read-only)
+	    - trigger: Write 1 to start acquisition
+	    - reset: Write 1 to reset state to idle
+
+	  Example usage when built-in:
+	    echo "/tmp/memory.lime" > /sys/kernel/lime/path
+	    echo "lime" > /sys/kernel/lime/format
+	    echo 1 > /sys/kernel/lime/trigger
+
+	  To compile as a module, choose M here: the module will be called lime.
+	  To compile into the kernel for avoiding version/symbol issues, choose Y.
 
 endmenu
