@@ -367,30 +367,39 @@ static ssize_t trigger_store(struct kobject *kobj, struct kobj_attribute *attr,
 	mutex_lock(&lime_state_mutex);
 	if (lime_state == LIME_STATE_ACQUIRING) {
 		mutex_unlock(&lime_state_mutex);
+		LIME_ERR("acquisition already in progress");
 		return -EBUSY;
 	}
 
 	/* Validate required parameters */
 	if (!path || !path[0]) {
 		mutex_unlock(&lime_state_mutex);
-		DBG("No path parameter specified");
+		LIME_ERR("path parameter not set");
 		return -EINVAL;
 	}
 
 	if (!lime_format || !lime_format[0]) {
 		mutex_unlock(&lime_state_mutex);
-		DBG("No format parameter specified");
+		LIME_ERR("format parameter not set");
 		return -EINVAL;
 	}
 
 	lime_state = LIME_STATE_ACQUIRING;
 	mutex_unlock(&lime_state_mutex);
 
+	LIME_INFO("acquisition triggered: path=%s format=%s", path, lime_format);
+
 	/* Perform acquisition */
 	ret = lime_do_acquisition();
 
 	mutex_lock(&lime_state_mutex);
-	lime_state = (ret == 0) ? LIME_STATE_COMPLETE : LIME_STATE_ERROR;
+	if (ret == 0) {
+		lime_state = LIME_STATE_COMPLETE;
+		LIME_INFO("acquisition complete");
+	} else {
+		lime_state = LIME_STATE_ERROR;
+		LIME_ERR("acquisition failed: %d", ret);
+	}
 	mutex_unlock(&lime_state_mutex);
 
 	return (ret == 0) ? count : ret;
@@ -466,19 +475,28 @@ int lime_sysfs_init(void)
 	/* Create kobject under /sys/kernel/lime */
 	lime_kobj = kobject_create_and_add("lime", kernel_kobj);
 	if (!lime_kobj) {
-		DBG("Failed to create lime kobject");
+		LIME_ERR("failed to create kobject");
 		return -ENOMEM;
 	}
 
 	/* Create sysfs group */
 	ret = sysfs_create_group(lime_kobj, &lime_attr_group);
 	if (ret) {
-		DBG("Failed to create sysfs group");
+		LIME_ERR("failed to create sysfs attributes: %d", ret);
 		kobject_put(lime_kobj);
 		lime_kobj = NULL;
 		return ret;
 	}
 
+	LIME_INFO("sysfs interface registered at /sys/kernel/lime/");
+	LIME_INFO("  attributes: path, format, dio, localhostonly, digest"
+#ifdef LIME_SUPPORTS_TIMING
+		  ", timeout"
+#endif
+#ifdef LIME_SUPPORTS_DEFLATE
+		  ", compress"
+#endif
+		  ", state, trigger, reset");
 	DBG("LiME sysfs interface initialized at /sys/kernel/lime");
 	return 0;
 }
@@ -492,6 +510,7 @@ void lime_sysfs_cleanup(void)
 		sysfs_remove_group(lime_kobj, &lime_attr_group);
 		kobject_put(lime_kobj);
 		lime_kobj = NULL;
+		LIME_INFO("sysfs interface unregistered");
 	}
 	DBG("LiME sysfs interface removed");
 }

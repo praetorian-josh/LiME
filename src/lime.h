@@ -66,6 +66,12 @@
 #define LIME_STATE_COMPLETE   2
 #define LIME_STATE_ERROR      3
 
+/* Always-visible logging for important status messages (dmesg) */
+#define LIME_LOG_PREFIX "lime: "
+#define LIME_INFO(fmt, args...) pr_info(LIME_LOG_PREFIX fmt "\n", ## args)
+#define LIME_ERR(fmt, args...)  pr_err(LIME_LOG_PREFIX fmt "\n", ## args)
+
+/* Debug logging (only when LIME_DEBUG is defined) */
 #ifdef LIME_DEBUG
 #define DBG(fmt, args...) do { printk("[LiME] "fmt"\n", ## args); } while (0)
 #else

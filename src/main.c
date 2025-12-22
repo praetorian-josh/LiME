@@ -184,12 +184,13 @@ static int __init lime_init_module(void)
 {
     int ret;
 
+    LIME_INFO("Linux Memory Extractor v1.9.1 loading");
     DBG("LiME module loading...");
 
     /* Always initialize sysfs interface */
     ret = lime_sysfs_init();
     if (ret) {
-        DBG("Failed to initialize sysfs interface: %d", ret);
+        LIME_ERR("failed to initialize sysfs interface: %d", ret);
         return ret;
     }
 
@@ -200,17 +201,21 @@ static int __init lime_init_module(void)
      */
 #ifdef MODULE
     if (sysfs_only) {
+        LIME_INFO("sysfs-only mode: use /sys/kernel/lime/trigger to start");
         DBG("Sysfs-only mode enabled, use /sys/kernel/lime/trigger to start acquisition");
         return 0;
     }
 
     /* Traditional module behavior: if params provided, auto-start */
     if (path && format) {
+        LIME_INFO("auto-start mode: acquiring memory to %s", path);
         ret = lime_do_acquisition();
         if (ret) {
             lime_set_state(LIME_STATE_ERROR);
+            LIME_ERR("acquisition failed: %d", ret);
         } else {
             lime_set_state(LIME_STATE_COMPLETE);
+            LIME_INFO("acquisition complete");
         }
         /*
          * For traditional usage, return error to unload module after acquisition
@@ -221,9 +226,11 @@ static int __init lime_init_module(void)
     }
 
     /* No params and not sysfs_only - wait for sysfs trigger */
+    LIME_INFO("waiting for trigger via /sys/kernel/lime/");
     DBG("No path/format specified, use /sys/kernel/lime/trigger to start acquisition");
 #else
     /* Built-in: always use sysfs interface */
+    LIME_INFO("built-in mode: use /sys/kernel/lime/trigger to start");
     DBG("Built-in mode: use /sys/kernel/lime/trigger to start acquisition");
 #endif
 
