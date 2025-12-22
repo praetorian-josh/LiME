@@ -39,6 +39,7 @@
 #include <linux/mm_types.h>
 #include <linux/sched/mm.h>
 #include <linux/pid.h>
+#include <linux/sched/task.h>
 
 #include <net/sock.h>
 #include <net/tcp.h>

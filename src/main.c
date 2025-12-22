@@ -196,8 +196,10 @@ int lime_dump_process(int pid)
     /*
      * Iterate through all VMAs (virtual memory areas)
      * This includes: heap, stack, mmap regions, shared libraries, etc.
+     * Use VMA iterator for kernel 6.1+ (maple tree instead of linked list)
      */
-    for (vma = mm->mmap; vma; vma = vma->vm_next) {
+    VMA_ITERATOR(vmi, mm, 0);
+    for_each_vma(vmi, vma) {
         unsigned long vma_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
 
         /* Skip non-readable regions */

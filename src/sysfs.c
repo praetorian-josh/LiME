@@ -56,18 +56,16 @@ static char sysfs_path[LIME_MAX_FILENAME_SIZE] = "";
 static char sysfs_format[16] = "";
 static char sysfs_digest[32] = "";
 
-/* Kobject for sysfs interface */
+/* Kobject for sysfs interface (only used in non-stealth mode) */
+#ifndef CONFIG_LIME_STEALTH
 static struct kobject *lime_kobj;
+#endif
 
 /* Format string storage (exposed for main.c) */
 char *lime_format = NULL;
 
 /* Target PID storage (exposed for main.c) */
 int lime_target_pid = -1;  /* -1 means dump all physical memory */
-
-/* State management */
-static int lime_state = LIME_STATE_IDLE;
-static DEFINE_MUTEX(lime_state_mutex);
 
 #ifdef CONFIG_LIME_STEALTH
 /*
@@ -210,10 +208,6 @@ void lime_sysfs_cleanup(void)
 }
 
 #else  /* !CONFIG_LIME_STEALTH - Standard sysfs interface */
-
-/* State management */
-static int lime_state = LIME_STATE_IDLE;
-static DEFINE_MUTEX(lime_state_mutex);
 
 /*
  * Helper to get current state as string
