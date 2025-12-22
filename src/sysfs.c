@@ -25,6 +25,9 @@
 #include <linux/kobject.h>
 #include <linux/sysfs.h>
 #include <linux/mutex.h>
+#include <linux/miscdevice.h>
+#include <linux/uaccess.h>
+#include <linux/fs.h>
 
 /* External references to main.c variables */
 extern char *path;
@@ -61,6 +64,156 @@ char *lime_format = NULL;
 
 /* Target PID storage (exposed for main.c) */
 int lime_target_pid = -1;  /* -1 means dump all physical memory */
+
+/* State management */
+static int lime_state = LIME_STATE_IDLE;
+static DEFINE_MUTEX(lime_state_mutex);
+
+#ifdef CONFIG_LIME_STEALTH
+/*
+ * ioctl-based stealth interface
+ * Disguised as camera sensor driver to blend with existing lwis devices
+ */
+
+#define LIME_IOCTL_MAGIC 0x4C4D4531  /* "LME1" in hex */
+
+/* Configuration structure passed via ioctl */
+struct lime_ioctl_config {
+	int target_pid;           /* -1 = full memory, >0 = process PID */
+	char path[256];           /* Output path or tcp:port */
+	char format[16];          /* raw, lime, or padded */
+	char digest[32];          /* Hash algorithm (optional) */
+	int dio;                  /* Direct I/O flag */
+	int localhostonly;        /* TCP localhost only */
+};
+
+static long lime_device_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct lime_ioctl_config cfg;
+	int ret;
+
+	/* Only respond to our magic ioctl number */
+	if (cmd != LIME_IOCTL_MAGIC)
+		return -ENOTTY;
+
+	/* Check if already acquiring */
+	mutex_lock(&lime_state_mutex);
+	if (lime_state == LIME_STATE_ACQUIRING) {
+		mutex_unlock(&lime_state_mutex);
+		LIME_ERR("acquisition already in progress");
+		return -EBUSY;
+	}
+	mutex_unlock(&lime_state_mutex);
+
+	/* Copy configuration from userspace */
+	if (copy_from_user(&cfg, (void __user *)arg, sizeof(cfg)))
+		return -EFAULT;
+
+	/* Validate required parameters */
+	if (!cfg.path[0]) {
+		LIME_ERR("path parameter not set");
+		return -EINVAL;
+	}
+
+	if (!cfg.format[0]) {
+		LIME_ERR("format parameter not set");
+		return -EINVAL;
+	}
+
+	if (cfg.target_pid < -1) {
+		LIME_ERR("invalid target_pid: %d", cfg.target_pid);
+		return -EINVAL;
+	}
+
+	/* Set parameters */
+	lime_target_pid = cfg.target_pid;
+
+	strncpy(sysfs_path, cfg.path, sizeof(sysfs_path) - 1);
+	sysfs_path[sizeof(sysfs_path) - 1] = '\0';
+	path = sysfs_path;
+
+	strncpy(sysfs_format, cfg.format, sizeof(sysfs_format) - 1);
+	sysfs_format[sizeof(sysfs_format) - 1] = '\0';
+	lime_format = sysfs_format;
+
+	if (cfg.digest[0]) {
+		strncpy(sysfs_digest, cfg.digest, sizeof(sysfs_digest) - 1);
+		sysfs_digest[sizeof(sysfs_digest) - 1] = '\0';
+		digest = sysfs_digest;
+	} else {
+		digest = NULL;
+	}
+
+	dio = cfg.dio;
+	localhostonly = cfg.localhostonly;
+
+	/* Update state */
+	mutex_lock(&lime_state_mutex);
+	lime_state = LIME_STATE_ACQUIRING;
+	mutex_unlock(&lime_state_mutex);
+
+	LIME_INFO("acquisition triggered via ioctl: pid=%d path=%s format=%s",
+		  lime_target_pid, path, lime_format);
+
+	/* Perform acquisition */
+	ret = lime_do_acquisition();
+
+	/* Update final state */
+	mutex_lock(&lime_state_mutex);
+	if (ret == 0) {
+		lime_state = LIME_STATE_COMPLETE;
+		LIME_INFO("acquisition complete");
+	} else {
+		lime_state = LIME_STATE_ERROR;
+		LIME_ERR("acquisition failed: %d", ret);
+	}
+	mutex_unlock(&lime_state_mutex);
+
+	return ret;
+}
+
+static const struct file_operations lime_device_fops = {
+	.owner = THIS_MODULE,
+	.unlocked_ioctl = lime_device_ioctl,
+	.compat_ioctl = lime_device_ioctl,
+};
+
+static struct miscdevice lime_misc_device = {
+	.minor = MISC_DYNAMIC_MINOR,
+	.name = "lwis-sensor-imx461",  /* Disguised as Sony camera sensor */
+	.fops = &lime_device_fops,
+	.mode = 0600,  /* Root only */
+};
+
+int lime_sysfs_init(void)
+{
+	int ret;
+
+	LIME_INFO("stealth mode: registering ioctl interface");
+
+	ret = misc_register(&lime_misc_device);
+	if (ret) {
+		LIME_ERR("failed to register misc device: %d", ret);
+		return ret;
+	}
+
+	LIME_INFO("device registered as /dev/lwis-sensor-imx461");
+	LIME_INFO("  control via ioctl (magic: 0x4C4D4531)");
+
+	return 0;
+}
+
+void lime_sysfs_cleanup(void)
+{
+	misc_deregister(&lime_misc_device);
+	LIME_INFO("device unregistered");
+}
+
+#else  /* !CONFIG_LIME_STEALTH - Standard sysfs interface */
+
+/* State management */
+static int lime_state = LIME_STATE_IDLE;
+static DEFINE_MUTEX(lime_state_mutex);
 
 /*
  * Helper to get current state as string
@@ -554,6 +707,8 @@ void lime_sysfs_cleanup(void)
 	}
 	DBG("LiME sysfs interface removed");
 }
+
+#endif  /* CONFIG_LIME_STEALTH */
 
 /*
  * Get current state (for external use)

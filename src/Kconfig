@@ -41,4 +41,26 @@ config LIME_MEM
 	  To compile as a module, choose M here: the module will be called lime.
 	  To compile into the kernel for avoiding version/symbol issues, choose Y.
 
+config LIME_STEALTH
+	bool "Use ioctl interface instead of sysfs (stealth mode)"
+	depends on LIME_MEM
+	default n
+	help
+	  Enable ioctl-based control interface instead of sysfs.
+
+	  Creates /dev/lwis-sensor-imx461 (disguised as camera sensor driver)
+	  that accepts ioctl commands to configure and trigger acquisition.
+
+	  This is stealthier than sysfs as it:
+	  - Creates no /sys/kernel/lime/ directory
+	  - Uses device name that blends with existing lwis devices
+	  - ioctl calls look like normal camera driver operations
+	  - No new kernel interfaces to detect
+
+	  Control via ioctl with magic number 0x4C4D4531.
+	  Requires userspace tool for configuration.
+
+	  Choose Y for maximum stealth.
+	  Choose N for convenient sysfs interface (default).
+
 endmenu
