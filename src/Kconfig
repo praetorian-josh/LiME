@@ -19,15 +19,23 @@ config LIME_MEM
 	    - dio: Direct I/O flag (0 or 1)
 	    - localhostonly: TCP localhost only (0 or 1)
 	    - digest: Hash algorithm (md5, sha1, sha256, etc.)
+	    - target_pid: Process to dump (-1=all memory, >0=specific PID)
 	    - timeout: Page read timeout in ms (kernel >= 2.6.35)
 	    - compress: Enable compression (kernel with ZLIB_DEFLATE)
 	    - state: Current acquisition state (read-only)
 	    - trigger: Write 1 to start acquisition
 	    - reset: Write 1 to reset state to idle
 
-	  Example usage when built-in:
+	  Example usage when built-in (full memory dump):
 	    echo "/tmp/memory.lime" > /sys/kernel/lime/path
 	    echo "lime" > /sys/kernel/lime/format
+	    echo -1 > /sys/kernel/lime/target_pid
+	    echo 1 > /sys/kernel/lime/trigger
+
+	  Example usage (process-specific dump):
+	    echo "/tmp/process.lime" > /sys/kernel/lime/path
+	    echo "lime" > /sys/kernel/lime/format
+	    echo 1234 > /sys/kernel/lime/target_pid
 	    echo 1 > /sys/kernel/lime/trigger
 
 	  To compile as a module, choose M here: the module will be called lime.

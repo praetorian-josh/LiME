@@ -34,6 +34,11 @@
 #include <linux/string.h>
 #include <linux/err.h>
 #include <linux/scatterlist.h>
+#include <linux/sched.h>
+#include <linux/mm.h>
+#include <linux/mm_types.h>
+#include <linux/sched/mm.h>
+#include <linux/pid.h>
 
 #include <net/sock.h>
 #include <net/tcp.h>
@@ -115,7 +120,13 @@ void lime_set_state(int state);
 /* Acquisition function (called from sysfs trigger) */
 int lime_do_acquisition(void);
 
+/* Process-specific acquisition */
+int lime_dump_process(int pid);
+
 /* Format string from sysfs */
 extern char *lime_format;
+
+/* Target PID from sysfs (-1 = full memory dump) */
+extern int lime_target_pid;
 
 #endif //__LIME_H_

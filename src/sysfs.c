@@ -59,6 +59,9 @@ static struct kobject *lime_kobj;
 /* Format string storage (exposed for main.c) */
 char *lime_format = NULL;
 
+/* Target PID storage (exposed for main.c) */
+int lime_target_pid = -1;  /* -1 means dump all physical memory */
+
 /*
  * Helper to get current state as string
  */
@@ -256,6 +259,42 @@ static ssize_t digest_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 static struct kobj_attribute digest_attr = __ATTR_RW(digest);
 
+/*
+ * Target PID attribute - process to dump (-1 = full memory)
+ */
+static ssize_t target_pid_show(struct kobject *kobj, struct kobj_attribute *attr,
+			       char *buf)
+{
+	return sprintf(buf, "%d\n", lime_target_pid);
+}
+
+static ssize_t target_pid_store(struct kobject *kobj, struct kobj_attribute *attr,
+				const char *buf, size_t count)
+{
+	int val, ret;
+
+	mutex_lock(&lime_state_mutex);
+	if (lime_state == LIME_STATE_ACQUIRING) {
+		mutex_unlock(&lime_state_mutex);
+		return -EBUSY;
+	}
+	mutex_unlock(&lime_state_mutex);
+
+	ret = kstrtoint(buf, 10, &val);
+	if (ret)
+		return ret;
+
+	if (val < -1)
+		return -EINVAL;
+
+	lime_target_pid = val;
+	DBG("target_pid set to %d", lime_target_pid);
+
+	return count;
+}
+
+static struct kobj_attribute target_pid_attr = __ATTR_RW(target_pid);
+
 #ifdef LIME_SUPPORTS_TIMING
 /*
  * Timeout attribute - page read timeout in ms
@@ -449,6 +488,7 @@ static struct attribute *lime_attrs[] = {
 	&dio_attr.attr,
 	&localhostonly_attr.attr,
 	&digest_attr.attr,
+	&target_pid_attr.attr,
 #ifdef LIME_SUPPORTS_TIMING
 	&timeout_attr.attr,
 #endif
@@ -489,7 +529,7 @@ int lime_sysfs_init(void)
 	}
 
 	LIME_INFO("sysfs interface registered at /sys/kernel/lime/");
-	LIME_INFO("  attributes: path, format, dio, localhostonly, digest"
+	LIME_INFO("  attributes: path, format, dio, localhostonly, digest, target_pid"
 #ifdef LIME_SUPPORTS_TIMING
 		  ", timeout"
 #endif

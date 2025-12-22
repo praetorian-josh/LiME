@@ -127,6 +127,198 @@ static int parse_format(const char *fmt)
 }
 
 /*
+ * Dump memory of a specific process using its virtual address space
+ * This is stealthier than userspace /proc/<pid>/mem access
+ */
+int lime_dump_process(int pid)
+{
+    struct task_struct *task;
+    struct mm_struct *mm;
+    struct vm_area_struct *vma;
+    unsigned long vaddr, nr_pages = 0, nr_dumped = 0;
+    int ret = 0, err;
+    void *page_buf;
+
+    LIME_INFO("dumping process memory: pid=%d", pid);
+
+    /* Setup output method (disk/tcp) */
+    if ((err = setup())) {
+        LIME_ERR("setup failed for process dump");
+        cleanup();
+        return err;
+    }
+
+    /* Allocate page buffer */
+    page_buf = (void *)__get_free_page(GFP_KERNEL);
+    if (!page_buf) {
+        LIME_ERR("failed to allocate page buffer");
+        cleanup();
+        return -ENOMEM;
+    }
+
+    /* Initialize digest if requested */
+    if (digest) {
+        compute_digest = ldigest_init();
+    }
+
+    /* Find the task */
+    rcu_read_lock();
+    task = pid_task(find_vpid(pid), PIDTYPE_PID);
+    if (!task) {
+        rcu_read_unlock();
+        LIME_ERR("process %d not found", pid);
+        free_page((unsigned long)page_buf);
+        cleanup();
+        return -ESRCH;
+    }
+
+    /* Get reference to task's mm */
+    mm = get_task_mm(task);
+    rcu_read_unlock();
+
+    if (!mm) {
+        LIME_ERR("process %d has no mm_struct", pid);
+        free_page((unsigned long)page_buf);
+        cleanup();
+        return -EINVAL;
+    }
+
+    LIME_INFO("dumping process %d (%s)", pid, task->comm);
+
+    /* Lock the mm for reading */
+    if (mmap_read_lock_killable(mm)) {
+        mmput(mm);
+        free_page((unsigned long)page_buf);
+        cleanup();
+        return -EINTR;
+    }
+
+    /*
+     * Iterate through all VMAs (virtual memory areas)
+     * This includes: heap, stack, mmap regions, shared libraries, etc.
+     */
+    for (vma = mm->mmap; vma; vma = vma->vm_next) {
+        unsigned long vma_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+
+        /* Skip non-readable regions */
+        if (!(vma->vm_flags & VM_READ))
+            continue;
+
+        /*
+         * Optional filtering - uncomment to skip certain types:
+         * Skip read-only file mappings (shared libraries):
+         *   if (vma->vm_file && !(vma->vm_flags & VM_WRITE))
+         *       continue;
+         * Skip special mappings:
+         *   if (vma->vm_flags & (VM_IO | VM_PFNMAP))
+         *       continue;
+         */
+
+        DBG("VMA: %lx-%lx pages=%lu flags=%lx",
+            vma->vm_start, vma->vm_end, vma_pages, vma->vm_flags);
+
+        nr_pages += vma_pages;
+
+        /* Write LiME header for this VMA if in LIME mode */
+        if (mode == LIME_MODE_LIME) {
+            lime_mem_range_header header;
+            header.magic = LIME_MAGIC;
+            header.version = 1;
+            header.s_addr = vma->vm_start;  /* Virtual address */
+            header.e_addr = vma->vm_end - 1;
+            memset(header.reserved, 0, sizeof(header.reserved));
+
+            if (try_write(&header, sizeof(header)) < 0) {
+                LIME_ERR("failed to write VMA header");
+                ret = -EIO;
+                goto out;
+            }
+        }
+
+        /* Dump each page in this VMA */
+        for (vaddr = vma->vm_start; vaddr < vma->vm_end; vaddr += PAGE_SIZE) {
+            struct page *page = NULL;
+            void *kaddr;
+            int gup_ret;
+            size_t bytes_to_copy = PAGE_SIZE;
+
+            /* Handle partial page at end of VMA */
+            if (vaddr + PAGE_SIZE > vma->vm_end)
+                bytes_to_copy = vma->vm_end - vaddr;
+
+            /*
+             * Use get_user_pages_remote() - same function as /proc/<pid>/mem
+             * FOLL_FORCE allows access even if page is not accessible normally
+             */
+            gup_ret = get_user_pages_remote(mm, vaddr, 1, FOLL_FORCE,
+                                           &page, NULL, NULL);
+
+            if (gup_ret <= 0) {
+                /* Page not present - write zeros or skip */
+                if (mode != LIME_MODE_RAW) {
+                    memset(page_buf, 0, bytes_to_copy);
+                    if (write_vaddr(page_buf, bytes_to_copy) < 0) {
+                        ret = -EIO;
+                        goto out;
+                    }
+                }
+                continue;
+            }
+
+            /* Map the physical page to kernel virtual address */
+            kaddr = kmap(page);
+
+            /* Copy page content to our buffer */
+            memcpy(page_buf, kaddr, bytes_to_copy);
+
+            /* Unmap and release the page */
+            kunmap(page);
+            put_page(page);
+
+            /* Write the page content */
+            if (write_vaddr(page_buf, bytes_to_copy) < 0) {
+                LIME_ERR("write failed at vaddr %lx", vaddr);
+                ret = -EIO;
+                goto out;
+            }
+
+            nr_dumped++;
+        }
+    }
+
+    LIME_INFO("process %d dump complete: %lu pages (%lu dumped)",
+              pid, nr_pages, nr_dumped);
+
+out:
+    mmap_read_unlock(mm);
+    mmput(mm);
+
+    /* Flush any remaining compressed data */
+#ifdef LIME_SUPPORTS_DEFLATE
+    if (compress) {
+        err = deflate_end_stream();
+        if (err < 0)
+            ret = err;
+    }
+#endif
+
+    /* Write digest if computed */
+    if (compute_digest == LIME_DIGEST_COMPLETE) {
+        if (method == LIME_METHOD_TCP)
+            ldigest_write_tcp();
+        else
+            ldigest_write_disk();
+        ldigest_clean();
+    }
+
+    write_flush();
+    free_page((unsigned long)page_buf);
+    cleanup();
+
+    return ret;
+}
+
+/*
  * Perform memory acquisition
  * This is called either from module init (traditional mode) or from sysfs trigger
  */
@@ -156,6 +348,7 @@ int lime_do_acquisition(void)
     DBG("  FORMAT: %s", fmt);
     DBG("  LOCALHOSTONLY: %u", localhostonly);
     DBG("  DIGEST: %s", digest);
+    DBG("  TARGET_PID: %d", lime_target_pid);
 
 #ifdef LIME_SUPPORTS_TIMING
     DBG("  TIMEOUT: %lu", timeout);
@@ -177,7 +370,14 @@ int lime_do_acquisition(void)
     else
         compute_digest = 0;
 
-    return init();
+    /* Check if we're doing process-specific or full memory dump */
+    if (lime_target_pid > 0) {
+        LIME_INFO("process-specific dump: pid=%d", lime_target_pid);
+        return lime_dump_process(lime_target_pid);
+    } else {
+        LIME_INFO("full physical memory dump");
+        return init();
+    }
 }
 
 static int __init lime_init_module(void)
