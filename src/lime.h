@@ -34,6 +34,11 @@
 #include <linux/string.h>
 #include <linux/err.h>
 #include <linux/scatterlist.h>
+#include <linux/sched.h>
+#include <linux/mm.h>
+#include <linux/mm_types.h>
+#include <linux/sched/mm.h>
+#include <linux/pid.h>
 
 #include <net/sock.h>
 #include <net/tcp.h>
@@ -60,6 +65,18 @@
 #define LIME_DIGEST_COMPLETE 0
 #define LIME_DIGEST_COMPUTE 1
 
+/* Acquisition states for sysfs interface */
+#define LIME_STATE_IDLE       0
+#define LIME_STATE_ACQUIRING  1
+#define LIME_STATE_COMPLETE   2
+#define LIME_STATE_ERROR      3
+
+/* Always-visible logging for important status messages (dmesg) */
+#define LIME_LOG_PREFIX "lime: "
+#define LIME_INFO(fmt, args...) pr_info(LIME_LOG_PREFIX fmt "\n", ## args)
+#define LIME_ERR(fmt, args...)  pr_err(LIME_LOG_PREFIX fmt "\n", ## args)
+
+/* Debug logging (only when LIME_DEBUG is defined) */
 #ifdef LIME_DEBUG
 #define DBG(fmt, args...) do { printk("[LiME] "fmt"\n", ## args); } while (0)
 #else
@@ -84,7 +101,7 @@
 #define LIME_SUPPORTS_DEFLATE
 #endif
 
-//structures
+/* Structures */
 
 typedef struct {
     unsigned int magic;
@@ -94,6 +111,22 @@ typedef struct {
     unsigned char reserved[8];
 } __attribute__ ((__packed__)) lime_mem_range_header;
 
+/* Sysfs interface functions */
+int lime_sysfs_init(void);
+void lime_sysfs_cleanup(void);
+int lime_get_state(void);
+void lime_set_state(int state);
 
+/* Acquisition function (called from sysfs trigger) */
+int lime_do_acquisition(void);
+
+/* Process-specific acquisition */
+int lime_dump_process(int pid);
+
+/* Format string from sysfs */
+extern char *lime_format;
+
+/* Target PID from sysfs (-1 = full memory dump) */
+extern int lime_target_pid;
 
 #endif //__LIME_H_

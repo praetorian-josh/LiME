@@ -56,28 +56,32 @@ extern int deflate_end_stream(void);
 extern ssize_t deflate(const void *, size_t);
 #endif
 
-static char * format = 0;
+static char *format = NULL;
 static int mode = 0;
 static int method = 0;
 
-static void * vpage;
+static void *vpage;
 
 #ifdef LIME_SUPPORTS_DEFLATE
 static void *deflate_page_buf;
 #endif
 
-char * path = 0;
+char *path = NULL;
 int dio = 0;
 int port = 0;
 int localhostonly = 0;
 
-char * digest = 0;
+char *digest = NULL;
 int compute_digest = 0;
 
 int no_overlap = 0;
 
 extern struct resource iomem_resource;
 
+/*
+ * Module parameters - these allow traditional insmod-based configuration
+ * When built-in, use the sysfs interface at /sys/kernel/lime/ instead
+ */
 module_param(path, charp, S_IRUGO);
 module_param(dio, int, S_IRUGO);
 module_param(format, charp, S_IRUGO);
@@ -94,14 +98,246 @@ int compress = 0;
 module_param(compress, int, S_IRUGO);
 #endif
 
-static int __init lime_init_module (void)
+/*
+ * When sysfs_only=1 or built-in, don't auto-start acquisition
+ * Instead, use /sys/kernel/lime/trigger to start
+ */
+static int sysfs_only = 0;
+module_param(sysfs_only, int, S_IRUGO);
+
+/*
+ * Parse format string and set mode
+ * Returns 0 on success, -EINVAL on error
+ */
+static int parse_format(const char *fmt)
 {
-    if(!path) {
+    if (!fmt || !fmt[0])
+        return -EINVAL;
+
+    if (!strcmp(fmt, "raw"))
+        mode = LIME_MODE_RAW;
+    else if (!strcmp(fmt, "lime"))
+        mode = LIME_MODE_LIME;
+    else if (!strcmp(fmt, "padded"))
+        mode = LIME_MODE_PADDED;
+    else
+        return -EINVAL;
+
+    return 0;
+}
+
+/*
+ * Dump memory of a specific process using its virtual address space
+ * This is stealthier than userspace /proc/<pid>/mem access
+ */
+int lime_dump_process(int pid)
+{
+    struct task_struct *task;
+    struct mm_struct *mm;
+    struct vm_area_struct *vma;
+    unsigned long vaddr, nr_pages = 0, nr_dumped = 0;
+    int ret = 0, err;
+    void *page_buf;
+
+    LIME_INFO("dumping process memory: pid=%d", pid);
+
+    /* Setup output method (disk/tcp) */
+    if ((err = setup())) {
+        LIME_ERR("setup failed for process dump");
+        cleanup();
+        return err;
+    }
+
+    /* Allocate page buffer */
+    page_buf = (void *)__get_free_page(GFP_KERNEL);
+    if (!page_buf) {
+        LIME_ERR("failed to allocate page buffer");
+        cleanup();
+        return -ENOMEM;
+    }
+
+    /* Initialize digest if requested */
+    if (digest) {
+        compute_digest = ldigest_init();
+    }
+
+    /* Find the task */
+    rcu_read_lock();
+    task = pid_task(find_vpid(pid), PIDTYPE_PID);
+    if (!task) {
+        rcu_read_unlock();
+        LIME_ERR("process %d not found", pid);
+        free_page((unsigned long)page_buf);
+        cleanup();
+        return -ESRCH;
+    }
+
+    /* Get reference to task's mm */
+    mm = get_task_mm(task);
+    rcu_read_unlock();
+
+    if (!mm) {
+        LIME_ERR("process %d has no mm_struct", pid);
+        free_page((unsigned long)page_buf);
+        cleanup();
+        return -EINVAL;
+    }
+
+    LIME_INFO("dumping process %d (%s)", pid, task->comm);
+
+    /* Lock the mm for reading */
+    if (mmap_read_lock_killable(mm)) {
+        mmput(mm);
+        free_page((unsigned long)page_buf);
+        cleanup();
+        return -EINTR;
+    }
+
+    /*
+     * Iterate through all VMAs (virtual memory areas)
+     * This includes: heap, stack, mmap regions, shared libraries, etc.
+     */
+    for (vma = mm->mmap; vma; vma = vma->vm_next) {
+        unsigned long vma_pages = (vma->vm_end - vma->vm_start) >> PAGE_SHIFT;
+
+        /* Skip non-readable regions */
+        if (!(vma->vm_flags & VM_READ))
+            continue;
+
+        /*
+         * Optional filtering - uncomment to skip certain types:
+         * Skip read-only file mappings (shared libraries):
+         *   if (vma->vm_file && !(vma->vm_flags & VM_WRITE))
+         *       continue;
+         * Skip special mappings:
+         *   if (vma->vm_flags & (VM_IO | VM_PFNMAP))
+         *       continue;
+         */
+
+        DBG("VMA: %lx-%lx pages=%lu flags=%lx",
+            vma->vm_start, vma->vm_end, vma_pages, vma->vm_flags);
+
+        nr_pages += vma_pages;
+
+        /* Write LiME header for this VMA if in LIME mode */
+        if (mode == LIME_MODE_LIME) {
+            lime_mem_range_header header;
+            header.magic = LIME_MAGIC;
+            header.version = 1;
+            header.s_addr = vma->vm_start;  /* Virtual address */
+            header.e_addr = vma->vm_end - 1;
+            memset(header.reserved, 0, sizeof(header.reserved));
+
+            if (try_write(&header, sizeof(header)) < 0) {
+                LIME_ERR("failed to write VMA header");
+                ret = -EIO;
+                goto out;
+            }
+        }
+
+        /* Dump each page in this VMA */
+        for (vaddr = vma->vm_start; vaddr < vma->vm_end; vaddr += PAGE_SIZE) {
+            struct page *page = NULL;
+            void *kaddr;
+            int gup_ret;
+            size_t bytes_to_copy = PAGE_SIZE;
+
+            /* Handle partial page at end of VMA */
+            if (vaddr + PAGE_SIZE > vma->vm_end)
+                bytes_to_copy = vma->vm_end - vaddr;
+
+            /*
+             * Use get_user_pages_remote() - same function as /proc/<pid>/mem
+             * FOLL_FORCE allows access even if page is not accessible normally
+             */
+            gup_ret = get_user_pages_remote(mm, vaddr, 1, FOLL_FORCE,
+                                           &page, NULL, NULL);
+
+            if (gup_ret <= 0) {
+                /* Page not present - write zeros or skip */
+                if (mode != LIME_MODE_RAW) {
+                    memset(page_buf, 0, bytes_to_copy);
+                    if (write_vaddr(page_buf, bytes_to_copy) < 0) {
+                        ret = -EIO;
+                        goto out;
+                    }
+                }
+                continue;
+            }
+
+            /* Map the physical page to kernel virtual address */
+            kaddr = kmap(page);
+
+            /* Copy page content to our buffer */
+            memcpy(page_buf, kaddr, bytes_to_copy);
+
+            /* Unmap and release the page */
+            kunmap(page);
+            put_page(page);
+
+            /* Write the page content */
+            if (write_vaddr(page_buf, bytes_to_copy) < 0) {
+                LIME_ERR("write failed at vaddr %lx", vaddr);
+                ret = -EIO;
+                goto out;
+            }
+
+            nr_dumped++;
+        }
+    }
+
+    LIME_INFO("process %d dump complete: %lu pages (%lu dumped)",
+              pid, nr_pages, nr_dumped);
+
+out:
+    mmap_read_unlock(mm);
+    mmput(mm);
+
+    /* Flush any remaining compressed data */
+#ifdef LIME_SUPPORTS_DEFLATE
+    if (compress) {
+        err = deflate_end_stream();
+        if (err < 0)
+            ret = err;
+    }
+#endif
+
+    /* Write digest if computed */
+    if (compute_digest == LIME_DIGEST_COMPLETE) {
+        if (method == LIME_METHOD_TCP)
+            ldigest_write_tcp();
+        else
+            ldigest_write_disk();
+        ldigest_clean();
+    }
+
+    write_flush();
+    free_page((unsigned long)page_buf);
+    cleanup();
+
+    return ret;
+}
+
+/*
+ * Perform memory acquisition
+ * This is called either from module init (traditional mode) or from sysfs trigger
+ */
+int lime_do_acquisition(void)
+{
+    int ret;
+    const char *fmt;
+
+    /*
+     * Use sysfs format if set, otherwise use module parameter format
+     */
+    fmt = lime_format ? lime_format : format;
+
+    if (!path || !path[0]) {
         DBG("No path parameter specified");
         return -EINVAL;
     }
 
-    if(!format) {
+    if (!fmt || !fmt[0]) {
         DBG("No format parameter specified");
         return -EINVAL;
     }
@@ -109,9 +345,10 @@ static int __init lime_init_module (void)
     DBG("Parameters");
     DBG("  PATH: %s", path);
     DBG("  DIO: %u", dio);
-    DBG("  FORMAT: %s", format);
+    DBG("  FORMAT: %s", fmt);
     DBG("  LOCALHOSTONLY: %u", localhostonly);
     DBG("  DIGEST: %s", digest);
+    DBG("  TARGET_PID: %d", lime_target_pid);
 
 #ifdef LIME_SUPPORTS_TIMING
     DBG("  TIMEOUT: %lu", timeout);
@@ -121,18 +358,83 @@ static int __init lime_init_module (void)
     DBG("  COMPRESS: %u", compress);
 #endif
 
-    if (!strcmp(format, "raw")) mode = LIME_MODE_RAW;
-    else if (!strcmp(format, "lime")) mode = LIME_MODE_LIME;
-    else if (!strcmp(format, "padded")) mode = LIME_MODE_PADDED;
-    else {
+    ret = parse_format(fmt);
+    if (ret) {
         DBG("Invalid format parameter specified.");
-        return -EINVAL;
+        return ret;
     }
 
     method = (sscanf(path, "tcp:%d", &port) == 1) ? LIME_METHOD_TCP : LIME_METHOD_DISK;
-    if (digest) compute_digest = LIME_DIGEST_COMPUTE;
+    if (digest)
+        compute_digest = LIME_DIGEST_COMPUTE;
+    else
+        compute_digest = 0;
 
-    return init();
+    /* Check if we're doing process-specific or full memory dump */
+    if (lime_target_pid > 0) {
+        LIME_INFO("process-specific dump: pid=%d", lime_target_pid);
+        return lime_dump_process(lime_target_pid);
+    } else {
+        LIME_INFO("full physical memory dump");
+        return init();
+    }
+}
+
+static int __init lime_init_module(void)
+{
+    int ret;
+
+    LIME_INFO("Linux Memory Extractor v1.9.1 loading");
+    DBG("LiME module loading...");
+
+    /* Always initialize sysfs interface */
+    ret = lime_sysfs_init();
+    if (ret) {
+        LIME_ERR("failed to initialize sysfs interface: %d", ret);
+        return ret;
+    }
+
+    /*
+     * When built as built-in (CONFIG_LIME_MEM=y), default to sysfs-only mode
+     * When built as module with sysfs_only=1, also use sysfs-only mode
+     * Otherwise, if path and format are provided, auto-start acquisition
+     */
+#ifdef MODULE
+    if (sysfs_only) {
+        LIME_INFO("sysfs-only mode: use /sys/kernel/lime/trigger to start");
+        DBG("Sysfs-only mode enabled, use /sys/kernel/lime/trigger to start acquisition");
+        return 0;
+    }
+
+    /* Traditional module behavior: if params provided, auto-start */
+    if (path && format) {
+        LIME_INFO("auto-start mode: acquiring memory to %s", path);
+        ret = lime_do_acquisition();
+        if (ret) {
+            lime_set_state(LIME_STATE_ERROR);
+            LIME_ERR("acquisition failed: %d", ret);
+        } else {
+            lime_set_state(LIME_STATE_COMPLETE);
+            LIME_INFO("acquisition complete");
+        }
+        /*
+         * For traditional usage, return error to unload module after acquisition
+         * This maintains backward compatibility
+         */
+        lime_sysfs_cleanup();
+        return ret;
+    }
+
+    /* No params and not sysfs_only - wait for sysfs trigger */
+    LIME_INFO("waiting for trigger via /sys/kernel/lime/");
+    DBG("No path/format specified, use /sys/kernel/lime/trigger to start acquisition");
+#else
+    /* Built-in: always use sysfs interface */
+    LIME_INFO("built-in mode: use /sys/kernel/lime/trigger to start");
+    DBG("Built-in mode: use /sys/kernel/lime/trigger to start acquisition");
+#endif
+
+    return 0;
 }
 
 static int init(void) {
@@ -394,8 +696,10 @@ static void cleanup(void) {
     return (method == LIME_METHOD_TCP) ? cleanup_tcp() : cleanup_disk();
 }
 
-static void __exit lime_cleanup_module(void) {
-
+static void __exit lime_cleanup_module(void)
+{
+    DBG("LiME module unloading...");
+    lime_sysfs_cleanup();
 }
 
 module_init(lime_init_module);
